@@ -46,28 +46,28 @@ function press(key: string) {
       display.value += key
     }
   }
-
+	const rawStr =display.value
   // Parse current value
-  const parsedVal = parseFloat(display.value)
+  const parsedVal = parseFloat(rawStr)
 
   // ONLY emit store updates for valid positive numbers (> 0)
   // This prevents deleting the item when display is empty or '0'
-  if (!isNaN(parsedVal) && parsedVal > 0 && !display.value.endsWith('.')) {
+  if (!isNaN(parsedVal) && parsedVal > 0 && !rawStr.endsWith('.')) {
     emit('update:value', parsedVal)
   }
 }
 
 function handleDone() {
-  const parsedVal = parseFloat(display.value)
+  const rawStr = display.value
+  const parsedVal = parseFloat(rawStr)
   
-  // If the user taps Done on an empty/invalid value, reset back to original prop
+  // Clean up trailing decimal on submission (e.g. "0.6662" -> valid, "0." -> 0)
   if (isNaN(parsedVal) || parsedVal <= 0) {
     display.value = String(props.value)
   } else {
     emit('update:value', parsedVal)
+    emit('close')
   }
-  
-  emit('close')
 }
 </script>
 
