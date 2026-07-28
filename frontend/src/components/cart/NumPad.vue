@@ -3,104 +3,117 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { Delete, Check } from 'lucide-vue-next'
+import { Delete } from 'lucide-vue-next'
 
 const props = defineProps<{
   value: number
-  label?: string
+  activeMode?: 'qty' | 'discount' | 'price'
 }>()
 
 const emit = defineEmits<{
   'update:value': [value: number]
-  close: []
+  'change-mode': [mode: 'qty' | 'discount' | 'price']
 }>()
 
-const display = ref(String(props.value))
+// Odoo maintains an active typing buffer string
+const buffer = ref(props.value ? String(props.value) : '')
+const mode = ref<'qty' | 'discount' | 'price'>(props.activeMode || 'qty')
 
+// Sync buffer if selected item changes
 watch(
   () => props.value,
-  (v) => {
-    display.value = String(v)
+  (newVal) => {
+    buffer.value = newVal ? String(newVal) : ''
   }
 )
 
-const buttons = [
-  '1', '2', '3',
-  '4', '5', '6',
-  '7', '8', '9',
-  '.', '0', 'DEL',
-]
-
-function press(key: string) {
-  if (key === 'DEL') {
-    // Allow display to become empty so the user can clear the field
-    display.value = display.value.slice(0, -1)
-  } else if (key === '.') {
-    if (!display.value.includes('.')) {
-      display.value = display.value ? display.value + '.' : '0.'
-    }
-  } else {
-    if (display.value === '0') {
-      display.value = key
-    } else {
-      display.value += key
-    }
-  }
-	const rawStr =display.value
-  // Parse current value
-  const parsedVal = parseFloat(rawStr)
-
-  // ONLY emit store updates for valid positive numbers (> 0)
-  // This prevents deleting the item when display is empty or '0'
-  if (!isNaN(parsedVal) && parsedVal > 0 && !rawStr.endsWith('.')) {
-    emit('update:value', parsedVal)
-  }
+function setMode(newMode: 'qty' | 'discount' | 'price') {
+  mode.value = newMode
+  buffer.value = '' // Clear buffer on mode switch, Odoo style
+  emit('change-mode', newMode)
 }
 
-function handleDone() {
-  const rawStr = display.value
-  const parsedVal = parseFloat(rawStr)
-  
-  // Clean up trailing decimal on submission (e.g. "0.6662" -> valid, "0." -> 0)
-  if (isNaN(parsedVal) || parsedVal <= 0) {
-    display.value = String(props.value)
+function handleInput(key: string) {
+  if (key === 'DEL') {
+    // Backspace action
+    buffer.value = buffer.value.slice(0, -1)
+  } else if (key === '+/-') {
+    // Toggle negative/positive
+    if (buffer.value.startsWith('-')) {
+      buffer.value = buffer.value.slice(1)
+    } else if (buffer.value !== '') {
+      buffer.value = '-' + buffer.value
+    }
+  } else if (key === '.') {
+    // Prevent multiple decimals
+    if (!buffer.value.includes('.')) {
+      buffer.value = buffer.value === '' ? '0.' : buffer.value + '.'
+    }
   } else {
-    emit('update:value', parsedVal)
-    emit('close')
+    // Append digit
+    if (buffer.value === '0') {
+      buffer.value = key
+    } else {
+      buffer.value += key
+    }
   }
+
+  // Parse string buffer to numeric value for cart update
+  let parsed = parseFloat(buffer.value)
+
+  // Standardize empty string or single decimal point to 0 for calculation
+  if (isNaN(parsed) || buffer.value === '' || buffer.value === '.') {
+    parsed = 0
+  }
+
+  // Emit update live without closing or clearing
+  emit('update:value', parsed)
 }
 </script>
 
 <template>
-  <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-2.5">
-    <div class="flex items-center justify-between mb-2">
-      <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{{ label || 'Quantity' }}</span>
-      <button
-        @click="handleDone"
-        class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors px-2 py-0.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/30"
+  <div class="w-full bg-gray-100 dark:bg-gray-800 p-2 rounded-xl">
+    <!-- Action Modes (Qty / % / Price) -->
+    <div class="grid grid-cols-4 gap-1 mb-1">
+      <button 
+        @click="setMode('qty')"
+        class="h-12 font-bold rounded-lg border text-sm transition-colors"
+        :class="mode === 'qty' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
       >
-        <Check :size="12" />
-        Done
+        Qty
+      </button>
+      <button 
+        @click="setMode('discount')"
+        class="h-12 font-bold rounded-lg border text-sm transition-colors"
+        :class="mode === 'discount' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
+      >
+        %
+      </button>
+      <button 
+        @click="setMode('price')"
+        class="h-12 font-bold rounded-lg border text-sm transition-colors"
+        :class="mode === 'price' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
+      >
+        Price
+      </button>
+      <button 
+        @click="handleInput('DEL')"
+        class="h-12 flex items-center justify-center bg-red-400 text-white rounded-lg border border-red-400 active:bg-red-500"
+      >
+        <Delete :size="20" />
       </button>
     </div>
-    <div class="text-right text-xl font-bold text-gray-900 dark:text-gray-100 mb-2 px-3 py-1.5 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 min-h-[40px] flex items-center justify-end">
-      {{ display || '0' }}
-    </div>
+
+    <!-- Keypad Matrix -->
     <div class="grid grid-cols-3 gap-1">
       <button
-        v-for="btn in buttons"
+        v-for="btn in ['1','2','3','4','5','6','7','8','9','+/-','0','.']"
         :key="btn"
-        @click="press(btn)"
-        :aria-label="btn === 'DEL' ? 'Delete' : `Press ${btn}`"
-        class="h-10 rounded-lg font-semibold transition-all duration-150 active:scale-95 flex items-center justify-center"
-        :class="
-          btn === 'DEL'
-            ? 'bg-red-50 dark:bg-red-900/30 text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50 text-sm'
-            : 'bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm border border-gray-200 dark:border-gray-700'
-        "
+        @click="handleInput(btn)"
+        class="h-12 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 font-bold rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 active:bg-gray-200 text-lg flex items-center justify-center"
+        :class="{ 'bg-amber-100 dark:bg-amber-900/40': btn === '+/-', 'bg-orange-100 dark:bg-orange-900/40': btn === '.' }"
       >
-        <Delete v-if="btn === 'DEL'" :size="16" />
-        <span v-else>{{ btn }}</span>
+        {{ btn }}
       </button>
     </div>
   </div>
