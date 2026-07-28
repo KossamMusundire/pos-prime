@@ -62,9 +62,10 @@ const numPadLabel = computed(() => {
   return __('Price')
 })
 
-// Calculated weight in Kg for live preview
+// Live calculated preview in Kg
 const calculatedWeightKg = computed(() => {
-  const val = parseFloat(keyboardInput.value) || 0
+  const raw = keyboardInput.value.replace(',', '.')
+  const val = parseFloat(raw) || 0
   if (numPadMode.value === 'qty' && weightInputMode.value === 'g') {
     return (val / 1000).toFixed(3)
   }
@@ -77,7 +78,7 @@ function onItemSelect(index: number) {
   cartStore.selectItem(index)
   showNumPad.value = true
   numPadMode.value = 'qty'
-  // Sync keyboard input
+  // Sync keyboard input with formatted initial value
   if (item) {
     const val = weightInputMode.value === 'g' ? item.qty * 1000 : item.qty
     keyboardInput.value = String(val)
@@ -140,12 +141,27 @@ function syncKeyboardInput() {
 const keyboardInput = ref('')
 
 function onKeyboardInputChange() {
-  const val = parseFloat(keyboardInput.value) || 0
+  const rawStr = keyboardInput.value.replace(',', '.')
+  
+  // Prevent reactivity from closing panel when input is incomplete (e.g. "0", "0.", "")
+  if (
+    rawStr === '' ||
+    rawStr === '0' ||
+    rawStr.endsWith('.') ||
+    isNaN(parseFloat(rawStr))
+  ) {
+    return
+  }
+
+  const val = parseFloat(rawStr)
   onNumPadUpdate(val)
 }
 
 function closeKeyboardInput() {
-  onKeyboardInputChange()
+  const rawStr = keyboardInput.value.replace(',', '.')
+  const val = parseFloat(rawStr) || 0
+  
+  onNumPadUpdate(val)
   showNumPad.value = false
 }
 
@@ -313,13 +329,12 @@ const emit = defineEmits<{
           <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider shrink-0">{{ numPadLabel }}</span>
           <input
             v-model="keyboardInput"
-            type="number"
-            step="any"
-            min="0"
+            type="text"
+            inputmode="decimal"
             :placeholder="numPadMode === 'qty' ? (weightInputMode === 'g' ? 'e.g. 654' : 'e.g. 0.654') : '0'"
             @input="onKeyboardInputChange"
             @focus="selectAllInput"
-            @keydown.enter="closeKeyboardInput"
+            @keydown.enter.prevent="closeKeyboardInput"
             class="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 text-sm font-semibold text-right focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
             autofocus
           />
