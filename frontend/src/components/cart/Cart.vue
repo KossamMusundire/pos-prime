@@ -2,7 +2,7 @@
 <!-- Licensed under GPLv3. See license.txt -->
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useCartStore } from '@/stores/cart'
 import { useCustomerStore } from '@/stores/customer'
 import { usePaymentStore } from '@/stores/payment'
@@ -17,7 +17,7 @@ import InvoiceOptions from './InvoiceOptions.vue'
 import NumPad from './NumPad.vue'
 import CustomerSelector from '@/components/customer/CustomerSelector.vue'
 import CustomerDetailPanel from '@/components/customer/CustomerDetailPanel.vue'
-import { ShoppingCart, CreditCard, Pause, Check } from 'lucide-vue-next'
+import { ShoppingCart, CreditCard, Pause, Check, Keyboard } from 'lucide-vue-next'
 
 const { isTouchDevice } = useTouchDevice()
 
@@ -32,6 +32,10 @@ const numPadMode = ref<'qty' | 'discount' | 'discountAmt' | 'rate'>('qty')
 
 // Weight Mode for Manual Input (Kg vs Grams)
 const weightInputMode = ref<'kg' | 'g'>('kg')
+
+// Odoo-Style Global Keyboard Buffer State
+const keyboardBuffer = ref('')
+const isGlobalTyping = ref(false)
 
 const availableNumPadModes = computed(() => {
   const modes: ('qty' | 'discount' | 'discountAmt' | 'rate')[] = ['qty']
@@ -64,7 +68,8 @@ const numPadLabel = computed(() => {
 
 // Live calculated preview in Kg
 const calculatedWeightKg = computed(() => {
-  const raw = keyboardInput.value.replace(',', '.')
+  const rawSource = isGlobalTyping.value ? keyboardBuffer.value : keyboardInput.value
+  const raw = rawSource.replace(',', '.')
   const val = parseFloat(raw) || 0
   if (numPadMode.value === 'qty' && weightInputMode.value === 'g') {
     return (val / 1000).toFixed(3)
@@ -78,6 +83,11 @@ function onItemSelect(index: number) {
   cartStore.selectItem(index)
   showNumPad.value = true
   numPadMode.value = 'qty'
+
+  // Reset global keyboard buffer state for newly selected item
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+
   // Sync keyboard input with formatted initial value
   if (item) {
     const val = weightInputMode.value === 'g' ? item.qty * 1000 : item.qty
@@ -94,6 +104,8 @@ function onRemove(index: number) {
   if (cartStore.items[index]?.is_free_item) return
   cartStore.removeItem(index)
   showNumPad.value = false
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
 }
 
 function onNumPadUpdate(value: number) {
@@ -112,11 +124,15 @@ function onNumPadUpdate(value: number) {
 
 function switchNumPadMode(mode: 'qty' | 'discount' | 'discountAmt' | 'rate') {
   numPadMode.value = mode
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
   syncKeyboardInput()
 }
 
 function switchWeightUnit(unit: 'kg' | 'g') {
   weightInputMode.value = unit
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
   syncKeyboardInput()
 }
 
@@ -137,16 +153,15 @@ function syncKeyboardInput() {
   }
 }
 
-// Keyboard input for non-touch desktops
+// Keyboard input state for explicit input field
 const keyboardInput = ref('')
 
-// Track local typing string — DO NOT update store on every keystroke
 function onKeyboardInputChange() {
-  // Allow free-form typing without modifying cart store state
+  // Allow free-form typing without modifying cart store state immediately
 }
 
 function closeKeyboardInput() {
-  let rawStr = keyboardInput.value.replace(',', '.').trim()
+  let rawStr = (isGlobalTyping.value ? keyboardBuffer.value : keyboardInput.value).replace(',', '.').trim()
   
   // Automatically prepend '0' if user starts with a dot (e.g., ".1111" -> "0.1111")
   if (rawStr.startsWith('.')) {
@@ -157,19 +172,94 @@ function closeKeyboardInput() {
 
   if (cartStore.selectedItemIndex === null) {
     showNumPad.value = false
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
     return
   }
 
   // If user submits an unfinished or invalid value like "" or "0."
   if (isNaN(val) || val <= 0 || rawStr.endsWith('.')) {
-    syncKeyboardInput() // Reset to valid store value without closing
+    syncKeyboardInput() // Reset to valid store value
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
     return
   }
 
-  // Valid decimal submission!
+  // Valid decimal submission
   onNumPadUpdate(val)
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
   showNumPad.value = false
 }
+
+// Global Physical Keyboard Listener (Odoo POS Style)
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  // Ignore keystrokes if the user is typing inside an actual search box or textarea
+  const activeEl = document.activeElement
+  if (
+    activeEl?.tagName === 'INPUT' ||
+    activeEl?.tagName === 'TEXTAREA' ||
+    activeEl?.isContentEditable
+  ) {
+    return
+  }
+
+  // Make sure a cart item is active
+  if (cartStore.selectedItemIndex === null) return
+
+  const key = event.key
+
+  if (key === 'Enter') {
+    event.preventDefault()
+    closeKeyboardInput()
+    return
+  }
+
+  if (key === 'Backspace') {
+    event.preventDefault()
+    keyboardBuffer.value = keyboardBuffer.value.slice(0, -1)
+    keyboardInput.value = keyboardBuffer.value
+    if (!keyboardBuffer.value) isGlobalTyping.value = false
+    return
+  }
+
+  if (key === 'Escape') {
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
+    syncKeyboardInput()
+    return
+  }
+
+  // Accept numbers and single decimal point
+  if (/^[0-9]$/.test(key) || key === '.' || key === ',') {
+    event.preventDefault()
+    isGlobalTyping.value = true
+
+    const char = key === ',' ? '.' : key
+
+    if (char === '.') {
+      if (!keyboardBuffer.value.includes('.')) {
+        // Odoo logic: starting with '.' turns into '0.'
+        keyboardBuffer.value = keyboardBuffer.value ? keyboardBuffer.value + '.' : '0.'
+      }
+    } else {
+      if (keyboardBuffer.value === '0') {
+        keyboardBuffer.value = char
+      } else {
+        keyboardBuffer.value += char
+      }
+    }
+    keyboardInput.value = keyboardBuffer.value
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleGlobalKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeyDown)
+})
 
 function selectAllInput(event: FocusEvent) {
   const target = event.target as HTMLInputElement
@@ -217,6 +307,20 @@ const emit = defineEmits<{
       v-if="showCustomerDetail && customerStore.customer"
       @close="showCustomerDetail = false"
     />
+
+    <!-- Active Global Keyboard Input Banner (Odoo POS Style) -->
+    <div
+      v-if="isGlobalTyping"
+      class="mx-3 mt-2 px-3 py-1.5 bg-amber-500 text-white font-mono font-bold text-xs rounded-lg shadow-sm flex items-center justify-between animate-pulse"
+    >
+      <span class="flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+        <Keyboard :size="14" />
+        {{ numPadLabel }}:
+      </span>
+      <span class="text-sm bg-amber-600 px-2 py-0.5 rounded border border-amber-400">
+        {{ keyboardBuffer || '0' }}
+      </span>
+    </div>
 
     <!-- Cart label + column headers (ERPNext-style) -->
     <div class="px-3 pt-2 pb-1.5">
