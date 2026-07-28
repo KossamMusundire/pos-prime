@@ -2,160 +2,540 @@
 <!-- Licensed under GPLv3. See license.txt -->
 
 <script setup lang="ts">
-import { Minus, Plus, Trash2, Gift, Zap, Package } from 'lucide-vue-next'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useCartStore } from '@/stores/cart'
+import { useCustomerStore } from '@/stores/customer'
+import { usePaymentStore } from '@/stores/payment'
+import { useSettingsStore } from '@/stores/settings'
 import { useCurrency } from '@/composables/useCurrency'
-import type { CartItem } from '@/types'
+import { useTouchDevice } from '@/composables/useTouchDevice'
+import CartItemComp from './CartItem.vue'
+import CartSummary from './CartSummary.vue'
+import CouponCodeInput from './CouponCodeInput.vue'
+import InvoiceDiscount from './InvoiceDiscount.vue'
+import InvoiceOptions from './InvoiceOptions.vue'
+import NumPad from './NumPad.vue'
+import CustomerSelector from '@/components/customer/CustomerSelector.vue'
+import CustomerDetailPanel from '@/components/customer/CustomerDetailPanel.vue'
+import { ShoppingCart, CreditCard, Pause, Check, Keyboard } from 'lucide-vue-next'
 
-const props = defineProps<{
-  item: CartItem
-  index: number
-  selected: boolean
-}>()
+const { isTouchDevice } = useTouchDevice()
 
-const emit = defineEmits<{
-  select: [index: number]
-  updateQty: [index: number, qty: number]
-  remove: [index: number]
-}>()
-
+const cartStore = useCartStore()
+const customerStore = useCustomerStore()
+const paymentStore = usePaymentStore()
+const settingsStore = useSettingsStore()
 const { formatCurrency } = useCurrency()
 
-function formatQty(qty: number): string {
-  if (!qty) return '0'
-  // Avoid long floating point strings like 0.6666666666666666
-  return Number(qty.toFixed(4)).toString()
-}
+const showNumPad = ref(false)
+const numPadMode = ref<'qty' | 'discount' | 'discountAmt' | 'rate'>('qty')
 
-function handleDecrease() {
-  const newQty = props.item.qty - 1
-  if (newQty <= 0) {
-    emit('remove', props.index)
-  } else {
-    emit('updateQty', props.index, newQty)
+// Weight Mode for Manual Input (Kg vs Grams)
+const weightInputMode = ref<'kg' | 'g'>('kg')
+
+// Odoo-Style Global Keyboard Buffer State
+const keyboardBuffer = ref('')
+const isGlobalTyping = ref(false)
+
+const availableNumPadModes = computed(() => {
+  const modes: ('qty' | 'discount' | 'discountAmt' | 'rate')[] = ['qty']
+  if (settingsStore.allowDiscountChange) {
+    modes.push('discount')
+    modes.push('discountAmt')
+  }
+  if (settingsStore.allowRateChange) modes.push('rate')
+  return modes
+})
+
+const numPadValue = computed(() => {
+  if (cartStore.selectedItemIndex === null) return 0
+  const item = cartStore.items[cartStore.selectedItemIndex]
+  if (!item) return 0
+  if (numPadMode.value === 'qty') {
+    return weightInputMode.value === 'g' ? item.qty * 1000 : item.qty
+  }
+  if (numPadMode.value === 'discount') return item.discount_percentage
+  if (numPadMode.value === 'discountAmt') return item.discount_amount
+  return item.rate
+})
+
+const numPadLabel = computed(() => {
+  if (numPadMode.value === 'qty') return weightInputMode.value === 'g' ? __('Weight (g)') : __('Quantity')
+  if (numPadMode.value === 'discount') return __('Discount %')
+  if (numPadMode.value === 'discountAmt') return __('Discount Amt')
+  return __('Price')
+})
+
+// Live calculated preview in Kg
+const calculatedWeightKg = computed(() => {
+  const rawSource = isGlobalTyping.value ? keyboardBuffer.value : keyboardInput.value
+  const raw = rawSource.replace(',', '.')
+  const val = parseFloat(raw) || 0
+  if (numPadMode.value === 'qty' && weightInputMode.value === 'g') {
+    return (val / 1000).toFixed(3)
+  }
+  return val.toFixed(3)
+})
+
+function onItemSelect(index: number) {
+  const item = cartStore.items[index]
+  if (item?.is_free_item) return // Free items are not editable
+  cartStore.selectItem(index)
+  showNumPad.value = true
+  numPadMode.value = 'qty'
+
+  // Reset global keyboard buffer state for newly selected item
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+
+  // Sync keyboard input with formatted initial value
+  if (item) {
+    const val = weightInputMode.value === 'g' ? item.qty * 1000 : item.qty
+    keyboardInput.value = String(val)
   }
 }
+
+function onUpdateQty(index: number, qty: number) {
+  if (cartStore.items[index]?.is_free_item) return
+  cartStore.updateQty(index, qty)
+}
+
+function onRemove(index: number) {
+  if (cartStore.items[index]?.is_free_item) return
+  cartStore.removeItem(index)
+  showNumPad.value = false
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+}
+
+function onNumPadUpdate(value: number) {
+  if (cartStore.selectedItemIndex === null) return
+  if (numPadMode.value === 'qty') {
+    const finalQty = weightInputMode.value === 'g' ? value / 1000 : value
+    cartStore.updateQty(cartStore.selectedItemIndex, finalQty)
+  } else if (numPadMode.value === 'discount') {
+    cartStore.updateItemDiscount(cartStore.selectedItemIndex, value)
+  } else if (numPadMode.value === 'discountAmt') {
+    cartStore.updateItemDiscountAmount(cartStore.selectedItemIndex, value)
+  } else {
+    cartStore.updateRate(cartStore.selectedItemIndex, value)
+  }
+}
+
+function switchNumPadMode(mode: 'qty' | 'discount' | 'discountAmt' | 'rate') {
+  numPadMode.value = mode
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+  syncKeyboardInput()
+}
+
+function switchWeightUnit(unit: 'kg' | 'g') {
+  weightInputMode.value = unit
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+  syncKeyboardInput()
+}
+
+function syncKeyboardInput() {
+  if (cartStore.selectedItemIndex === null) return
+  const item = cartStore.items[cartStore.selectedItemIndex]
+  if (!item) return
+
+  if (numPadMode.value === 'qty') {
+    const val = weightInputMode.value === 'g' ? item.qty * 1000 : item.qty
+    keyboardInput.value = String(val)
+  } else if (numPadMode.value === 'discount') {
+    keyboardInput.value = String(item.discount_percentage)
+  } else if (numPadMode.value === 'discountAmt') {
+    keyboardInput.value = String(item.discount_amount)
+  } else {
+    keyboardInput.value = String(item.rate)
+  }
+}
+
+// Keyboard input state for explicit input field
+const keyboardInput = ref('')
+
+function onKeyboardInputChange() {
+  // Allow free-form typing without modifying cart store state immediately
+}
+
+function closeKeyboardInput() {
+  let rawStr = (isGlobalTyping.value ? keyboardBuffer.value : keyboardInput.value).replace(',', '.').trim()
+  
+  // Automatically prepend '0' if user starts with a dot (e.g., ".1111" -> "0.1111")
+  if (rawStr.startsWith('.')) {
+    rawStr = '0' + rawStr
+  }
+
+  const val = parseFloat(rawStr)
+
+  if (cartStore.selectedItemIndex === null) {
+    showNumPad.value = false
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
+    return
+  }
+
+  // If user submits an unfinished or invalid value like "" or "0."
+  if (isNaN(val) || val <= 0 || rawStr.endsWith('.')) {
+    syncKeyboardInput() // Reset to valid store value
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
+    return
+  }
+
+  // Valid decimal submission
+  onNumPadUpdate(val)
+  keyboardBuffer.value = ''
+  isGlobalTyping.value = false
+  showNumPad.value = false
+}
+
+// Global Physical Keyboard Listener (Odoo POS Style)
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  // Ignore keystrokes if the user is typing inside an actual search box or textarea
+  const activeEl = document.activeElement
+  if (
+    activeEl?.tagName === 'INPUT' ||
+    activeEl?.tagName === 'TEXTAREA' ||
+    activeEl?.isContentEditable
+  ) {
+    return
+  }
+
+  // Make sure a cart item is active
+  if (cartStore.selectedItemIndex === null) return
+
+  const key = event.key
+
+  if (key === 'Enter') {
+    event.preventDefault()
+    closeKeyboardInput()
+    return
+  }
+
+  if (key === 'Backspace') {
+    event.preventDefault()
+    keyboardBuffer.value = keyboardBuffer.value.slice(0, -1)
+    keyboardInput.value = keyboardBuffer.value
+    if (!keyboardBuffer.value) isGlobalTyping.value = false
+    return
+  }
+
+  if (key === 'Escape') {
+    keyboardBuffer.value = ''
+    isGlobalTyping.value = false
+    syncKeyboardInput()
+    return
+  }
+
+  // Accept numbers and single decimal point
+  if (/^[0-9]$/.test(key) || key === '.' || key === ',') {
+    event.preventDefault()
+    isGlobalTyping.value = true
+
+    const char = key === ',' ? '.' : key
+
+    if (char === '.') {
+      if (!keyboardBuffer.value.includes('.')) {
+        // Odoo logic: starting with '.' turns into '0.'
+        keyboardBuffer.value = keyboardBuffer.value ? keyboardBuffer.value + '.' : '0.'
+      }
+    } else {
+      if (keyboardBuffer.value === '0') {
+        keyboardBuffer.value = char
+      } else {
+        keyboardBuffer.value += char
+      }
+    }
+    keyboardInput.value = keyboardBuffer.value
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleGlobalKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeyDown)
+})
+
+function selectAllInput(event: FocusEvent) {
+  const target = event.target as HTMLInputElement
+  if (target) {
+    target.select()
+  }
+}
+
+function openPayment() {
+  paymentStore.openPaymentDialog()
+}
+
+const showCustomerDetail = ref(false)
+const cartScrollContainer = ref<HTMLElement | null>(null)
+
+// Auto-scroll cart to bottom when items are added
+watch(
+  () => cartStore.items.length,
+  () => {
+    nextTick(() => {
+      if (cartScrollContainer.value) {
+        cartScrollContainer.value.scrollTo({
+          top: cartScrollContainer.value.scrollHeight,
+          behavior: 'smooth',
+        })
+      }
+    })
+  }
+)
+
+const emit = defineEmits<{
+  holdOrder: []
+}>()
 </script>
 
 <template>
-  <div>
-    <div
-      role="listitem"
-      @click="emit('select', index)"
-      class="group flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all duration-150"
-      :class="[
-        item.is_free_item
-          ? 'bg-green-50 dark:bg-green-900/10'
-          : selected
-            ? 'bg-blue-50/50 dark:bg-blue-900/10'
-            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
-      ]"
-    >
-      <!-- Item image thumbnail (ERPNext-style) -->
-      <div class="w-8 h-8 rounded-md flex items-center justify-center shrink-0 overflow-hidden bg-gray-100 dark:bg-gray-800">
-        <img
-          v-if="item.image"
-          :src="item.image"
-          :alt="item.item_name"
-          class="w-full h-full object-cover"
-        />
-        <Package v-else class="text-gray-300 dark:text-gray-600" :size="14" />
-      </div>
-
-      <!-- Item name & description -->
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-1.5">
-          <span class="text-sm font-bold text-gray-800 dark:text-gray-200 truncate leading-tight">
-            {{ item.item_name }}
-          </span>
-          <span
-            v-if="item.is_free_item"
-            class="inline-flex items-center gap-0.5 px-1.5 py-0 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400 rounded text-[9px] font-bold shrink-0"
-          >
-            <Gift :size="8" />
-            {{ __('Free') }}
-          </span>
-          <span
-            v-else-if="item.pricing_rules"
-            class="inline-flex items-center gap-0.5 px-1.5 py-0 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 rounded text-[9px] font-bold shrink-0"
-          >
-            <Zap :size="8" />
-            {{ __('Promo') }}
-          </span>
-        </div>
-        <div class="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-          <span v-if="item.is_free_item" class="text-green-600 dark:text-green-400 font-medium">{{ formatCurrency(0) }}</span>
-          <template v-else>
-            <span v-if="item.price_list_rate && item.price_list_rate !== item.rate" class="line-through text-gray-400 dark:text-gray-500 text-[10px]">{{ formatCurrency(item.price_list_rate) }}</span>
-            <span class="font-medium">{{ formatCurrency(item.rate) }}</span>
-          </template>
-          <span v-if="!item.is_free_item && item.discount_percentage > 0" class="inline-flex items-center px-1 py-0 bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 rounded text-[10px] font-semibold">
-            -{{ item.discount_percentage }}%
-          </span>
-          <span v-else-if="!item.is_free_item && item.discount_amount > 0" class="inline-flex items-center px-1 py-0 bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 rounded text-[10px] font-semibold">
-            -{{ formatCurrency(item.discount_amount) }}
-          </span>
-        </div>
-        <div v-if="item.batch_no || item.serial_no" class="flex items-center gap-1 mt-0.5">
-          <span v-if="item.batch_no" class="inline-flex items-center px-1.5 py-0 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded text-[9px] font-medium">
-            B: {{ item.batch_no }}
-          </span>
-          <span v-if="item.serial_no" class="inline-flex items-center px-1.5 py-0 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded text-[9px] font-medium">
-            SN: {{ item.serial_no }}
-          </span>
-        </div>
-        <div v-if="item.uom !== item.stock_uom" class="text-[9px] text-gray-400 dark:text-gray-500 mt-0.5">
-          {{ item.uom }} ({{ item.conversion_factor }}x)
-        </div>
-        <div v-if="item.item_tax_template" class="text-[9px] text-purple-500 dark:text-purple-400 mt-0.5">
-          {{ item.item_tax_template }}
-        </div>
-      </div>
-
-      <!-- Qty Controls (hidden for free items) -->
-      <div v-if="!item.is_free_item" class="flex items-center gap-0.5 shrink-0">
-        <button
-          @click.stop="handleDecrease"
-          aria-label="Decrease quantity"
-          class="w-7 h-7 rounded-md flex items-center justify-center text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300 active:scale-90 transition-all duration-150"
-        >
-          <Minus :size="14" />
-        </button>
-        <span class="min-w-[28px] px-1 text-center text-xs font-bold text-gray-800 dark:text-gray-200 truncate">
-          {{ formatQty(item.qty) }}
-        </span>
-        <button
-          @click.stop="emit('updateQty', index, item.qty + 1)"
-          aria-label="Increase quantity"
-          class="w-7 h-7 rounded-md flex items-center justify-center text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300 active:scale-90 transition-all duration-150"
-        >
-          <Plus :size="14" />
-        </button>
-      </div>
-      <div v-else class="shrink-0">
-        <span class="text-xs font-bold text-green-600 dark:text-green-400">&times;{{ formatQty(item.qty) }}</span>
-      </div>
-
-      <!-- Amount -->
-      <div class="w-[72px] text-right shrink-0">
-        <span class="text-sm font-bold" :class="item.is_free_item ? 'text-green-600 dark:text-green-400' : 'text-gray-900 dark:text-gray-100'">
-          {{ formatCurrency(item.is_free_item ? 0 : item.amount) }}
-        </span>
-      </div>
-
-      <!-- Delete (hidden for free items) -->
-      <button
-        v-if="!item.is_free_item"
-        @click.stop="emit('remove', index)"
-        aria-label="Remove item"
-        class="w-7 h-7 rounded-md flex items-center justify-center text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 active:scale-90 transition-all duration-150 opacity-0 group-hover:opacity-100"
-        :class="{ 'opacity-100': selected }"
-      >
-        <Trash2 :size="13" />
-      </button>
-      <div v-else class="w-7" />
+  <div class="flex flex-col h-full bg-white dark:bg-gray-900">
+    <!-- Customer section (ERPNext-style: separate area at top) -->
+    <div class="px-3 py-2 border-b border-gray-100 dark:border-gray-800">
+      <CustomerSelector @open-detail="showCustomerDetail = true" />
     </div>
 
-    <!-- Separator line (ERPNext-style) -->
-    <div class="mx-3 border-b border-gray-100 dark:border-gray-800" />
+    <!-- Customer detail panel -->
+    <CustomerDetailPanel
+      v-if="showCustomerDetail && customerStore.customer"
+      @close="showCustomerDetail = false"
+    />
+
+    <!-- Active Global Keyboard Input Banner (Odoo POS Style) -->
+    <div
+      v-if="isGlobalTyping"
+      class="mx-3 mt-2 px-3 py-1.5 bg-amber-500 text-white font-mono font-bold text-xs rounded-lg shadow-sm flex items-center justify-between animate-pulse"
+    >
+      <span class="flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+        <Keyboard :size="14" />
+        {{ numPadLabel }}:
+      </span>
+      <span class="text-sm bg-amber-600 px-2 py-0.5 rounded border border-amber-400">
+        {{ keyboardBuffer || '0' }}
+      </span>
+    </div>
+
+    <!-- Cart label + column headers (ERPNext-style) -->
+    <div class="px-3 pt-2 pb-1.5">
+      <div class="text-sm font-bold text-gray-900 dark:text-gray-100 mb-1.5">{{ __('Cart') }}</div>
+      <div v-if="cartStore.items.length > 0" class="flex items-center text-[11px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+        <span class="flex-1">{{ __('Item') }}</span>
+        <span class="w-[88px] text-center">{{ __('Qty') }}</span>
+        <span class="w-[72px] text-right">{{ __('Amount') }}</span>
+        <span class="w-7" />
+      </div>
+    </div>
+
+    <!-- Cart items -->
+    <div ref="cartScrollContainer" class="flex-1 overflow-y-auto px-2 py-1">
+      <div
+        v-if="cartStore.items.length === 0"
+        class="flex flex-col items-center justify-center h-full rounded-lg bg-gray-100 dark:bg-gray-800"
+      >
+        <ShoppingCart :size="28" class="text-gray-300 dark:text-gray-600 mb-2" />
+        <span class="text-sm font-medium text-gray-400 dark:text-gray-500">{{ __('No items in cart') }}</span>
+      </div>
+      <TransitionGroup v-else name="cart-item" tag="div">
+        <CartItemComp
+          v-for="(item, index) in cartStore.items"
+          :key="`${item.item_code}-${item.batch_no || ''}-${index}`"
+          :item="item"
+          :index="index"
+          :selected="cartStore.selectedItemIndex === index"
+          @select="onItemSelect"
+          @update-qty="onUpdateQty"
+          @remove="onRemove"
+        />
+      </TransitionGroup>
+    </div>
+
+    <!-- NumPad for touch devices -->
+    <Transition name="numpad">
+      <div v-if="isTouchDevice && showNumPad && cartStore.selectedItemIndex !== null" class="px-2 pb-2 border-t border-gray-100 dark:border-gray-800">
+        <div class="flex gap-1 my-2">
+          <button
+            v-for="mode in availableNumPadModes"
+            :key="mode"
+            @click="switchNumPadMode(mode)"
+            class="flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all duration-150 uppercase tracking-wider"
+            :class="numPadMode === mode
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'"
+          >
+            {{ mode === 'qty' ? __('Qty') : mode === 'discount' ? __('Disc%') : mode === 'discountAmt' ? __('Disc$') : __('Price') }}
+          </button>
+        </div>
+
+        <!-- Grams / Kg toggle for touch -->
+        <div v-if="numPadMode === 'qty'" class="flex gap-1 mb-2 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+          <button
+            @click="switchWeightUnit('kg')"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all"
+            :class="weightInputMode === 'kg' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500'"
+          >
+            {{ __('Kg') }}
+          </button>
+          <button
+            @click="switchWeightUnit('g')"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all"
+            :class="weightInputMode === 'g' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500'"
+          >
+            {{ __('Grams (g)') }}
+          </button>
+        </div>
+
+        <NumPad
+          :value="numPadValue"
+          :label="numPadLabel"
+          @update:value="onNumPadUpdate"
+          @close="showNumPad = false"
+        />
+      </div>
+    </Transition>
+
+    <!-- Keyboard input for non-touch desktops -->
+    <Transition name="numpad">
+      <div v-if="!isTouchDevice && showNumPad && cartStore.selectedItemIndex !== null" class="px-3 py-2 border-t border-gray-100 dark:border-gray-800">
+        <div class="flex gap-1 mb-2">
+          <button
+            v-for="mode in availableNumPadModes"
+            :key="mode"
+            @click="switchNumPadMode(mode)"
+            class="flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all duration-150 uppercase tracking-wider"
+            :class="numPadMode === mode
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'"
+          >
+            {{ mode === 'qty' ? __('Qty') : mode === 'discount' ? __('Disc%') : mode === 'discountAmt' ? __('Disc$') : __('Price') }}
+          </button>
+        </div>
+
+        <!-- Grams / Kg toggle for keyboard input -->
+        <div v-if="numPadMode === 'qty'" class="flex gap-1 mb-2 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+          <button
+            @click="switchWeightUnit('kg')"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all"
+            :class="weightInputMode === 'kg' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500'"
+          >
+            {{ __('Kg') }}
+          </button>
+          <button
+            @click="switchWeightUnit('g')"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all"
+            :class="weightInputMode === 'g' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500'"
+          >
+            {{ __('Grams (g)') }}
+          </button>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider shrink-0">{{ numPadLabel }}</span>
+          <input
+            v-model="keyboardInput"
+            type="text"
+            inputmode="decimal"
+            :placeholder="numPadMode === 'qty' ? (weightInputMode === 'g' ? 'e.g. 654' : 'e.g. 0.654') : '0'"
+            @input="onKeyboardInputChange"
+            @focus="selectAllInput"
+            @keydown.enter.prevent="closeKeyboardInput"
+            class="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 text-sm font-semibold text-right focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+            autofocus
+          />
+          <button
+            @click="closeKeyboardInput"
+            class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors px-2 py-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/30"
+          >
+            <Check :size="12" />
+            {{ __('Done') }}
+          </button>
+        </div>
+
+        <!-- Calculated weight display -->
+        <div v-if="numPadMode === 'qty'" class="text-[11px] font-medium text-gray-400 dark:text-gray-500 text-right mt-1.5">
+          {{ __('Cart Weight:') }} <span class="font-bold text-blue-600 dark:text-blue-400">{{ calculatedWeightKg }} kg</span>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Totals + Actions (sticky bottom, ERPNext-style) -->
+    <div class="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
+      <!-- Expandable extras -->
+      <div v-if="cartStore.items.length > 0" class="px-3 pt-1.5 space-y-1">
+        <InvoiceDiscount />
+        <CouponCodeInput />
+        <InvoiceOptions />
+      </div>
+
+      <!-- Summary -->
+      <div class="px-3 pt-1.5 pb-1.5">
+        <CartSummary />
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="px-3 pb-2 flex gap-2">
+        <button
+          @click="emit('holdOrder')"
+          :disabled="cartStore.items.length === 0"
+          class="py-2.5 px-4 rounded-lg text-sm font-bold transition-all duration-150 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+          title="Hold Order"
+        >
+          <Pause :size="16" />
+        </button>
+        <button
+          @click="openPayment"
+          :disabled="cartStore.items.length === 0 || !customerStore.customer"
+          class="checkout-btn flex-1 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 flex items-center justify-center gap-2 text-white disabled:cursor-not-allowed"
+          :class="cartStore.items.length > 0 && customerStore.customer
+            ? 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600'
+            : 'bg-blue-300 dark:bg-blue-800 opacity-70'"
+        >
+          <CreditCard :size="16" />
+          {{ __('Checkout') }} {{ cartStore.items.length > 0 ? formatCurrency(cartStore.roundedTotal) : '' }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.cart-item-enter-active {
+  transition: all 0.25s ease-out;
+}
+.cart-item-leave-active {
+  transition: all 0.2s ease-in;
+}
+.cart-item-enter-from {
+  opacity: 0;
+  transform: translateX(-20px);
+}
+.cart-item-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
+}
+.cart-item-move {
+  transition: transform 0.25s ease;
+}
+
+.numpad-enter-active {
+  transition: all 0.2s ease-out;
+}
+.numpad-leave-active {
+  transition: all 0.15s ease-in;
+}
+.numpad-enter-from,
+.numpad-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+.numpad-enter-to,
+.numpad-leave-from {
+  max-height: 400px;
+}
+</style>
