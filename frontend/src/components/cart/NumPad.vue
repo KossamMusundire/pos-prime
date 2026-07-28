@@ -33,10 +33,11 @@ const buttons = [
 
 function press(key: string) {
   if (key === 'DEL') {
-    display.value = display.value.slice(0, -1) || '0'
+    // Allow display to become empty so the user can clear the field
+    display.value = display.value.slice(0, -1)
   } else if (key === '.') {
     if (!display.value.includes('.')) {
-      display.value += '.'
+      display.value = display.value ? display.value + '.' : '0.'
     }
   } else {
     if (display.value === '0') {
@@ -45,7 +46,28 @@ function press(key: string) {
       display.value += key
     }
   }
-  emit('update:value', parseFloat(display.value) || 0)
+
+  // Parse current value
+  const parsedVal = parseFloat(display.value)
+
+  // ONLY emit store updates for valid positive numbers (> 0)
+  // This prevents deleting the item when display is empty or '0'
+  if (!isNaN(parsedVal) && parsedVal > 0 && !display.value.endsWith('.')) {
+    emit('update:value', parsedVal)
+  }
+}
+
+function handleDone() {
+  const parsedVal = parseFloat(display.value)
+  
+  // If the user taps Done on an empty/invalid value, reset back to original prop
+  if (isNaN(parsedVal) || parsedVal <= 0) {
+    display.value = String(props.value)
+  } else {
+    emit('update:value', parsedVal)
+  }
+  
+  emit('close')
 }
 </script>
 
@@ -54,15 +76,15 @@ function press(key: string) {
     <div class="flex items-center justify-between mb-2">
       <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{{ label || 'Quantity' }}</span>
       <button
-        @click="emit('close')"
+        @click="handleDone"
         class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors px-2 py-0.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/30"
       >
         <Check :size="12" />
         Done
       </button>
     </div>
-    <div class="text-right text-xl font-bold text-gray-900 dark:text-gray-100 mb-2 px-3 py-1.5 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
-      {{ display }}
+    <div class="text-right text-xl font-bold text-gray-900 dark:text-gray-100 mb-2 px-3 py-1.5 bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 min-h-[40px] flex items-center justify-end">
+      {{ display || '0' }}
     </div>
     <div class="grid grid-cols-3 gap-1">
       <button
