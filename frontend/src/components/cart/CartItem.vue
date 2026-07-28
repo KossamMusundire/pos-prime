@@ -19,6 +19,21 @@ const emit = defineEmits<{
 }>()
 
 const { formatCurrency } = useCurrency()
+
+function formatQty(qty: number): string {
+  if (!qty) return '0'
+  // Avoid long floating point strings like 0.6666666666666666
+  return Number(qty.toFixed(4)).toString()
+}
+
+function handleDecrease() {
+  const newQty = props.item.qty - 1
+  if (newQty <= 0) {
+    emit('remove', props.index)
+  } else {
+    emit('updateQty', props.index, newQty)
+  }
+}
 </script>
 
 <template>
@@ -99,14 +114,14 @@ const { formatCurrency } = useCurrency()
       <!-- Qty Controls (hidden for free items) -->
       <div v-if="!item.is_free_item" class="flex items-center gap-0.5 shrink-0">
         <button
-          @click.stop="emit('updateQty', index, item.qty - 1)"
+          @click.stop="handleDecrease"
           aria-label="Decrease quantity"
           class="w-7 h-7 rounded-md flex items-center justify-center text-gray-400 dark:text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300 active:scale-90 transition-all duration-150"
         >
           <Minus :size="14" />
         </button>
-        <span class="w-7 text-center text-xs font-bold text-gray-800 dark:text-gray-200">
-          {{ item.qty }}
+        <span class="min-w-[28px] px-1 text-center text-xs font-bold text-gray-800 dark:text-gray-200 truncate">
+          {{ formatQty(item.qty) }}
         </span>
         <button
           @click.stop="emit('updateQty', index, item.qty + 1)"
@@ -117,7 +132,7 @@ const { formatCurrency } = useCurrency()
         </button>
       </div>
       <div v-else class="shrink-0">
-        <span class="text-xs font-bold text-green-600 dark:text-green-400">&times;{{ item.qty }}</span>
+        <span class="text-xs font-bold text-green-600 dark:text-green-400">&times;{{ formatQty(item.qty) }}</span>
       </div>
 
       <!-- Amount -->
@@ -127,7 +142,7 @@ const { formatCurrency } = useCurrency()
         </span>
       </div>
 
-      <!-- Delete (hidden for free items — they're managed by pricing rules) -->
+      <!-- Delete (hidden for free items) -->
       <button
         v-if="!item.is_free_item"
         @click.stop="emit('remove', index)"
