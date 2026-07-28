@@ -7,50 +7,57 @@ import { Delete } from 'lucide-vue-next'
 
 const props = defineProps<{
   value: number
-  activeMode?: 'qty' | 'discount' | 'price'
+  label?: string
 }>()
 
 const emit = defineEmits<{
   'update:value': [value: number]
-  'change-mode': [mode: 'qty' | 'discount' | 'price']
+  close: []
 }>()
 
-// Odoo maintains an active typing buffer string
-const buffer = ref(props.value ? String(props.value) : '')
-const mode = ref<'qty' | 'discount' | 'price'>(props.activeMode || 'qty')
+// Internal string buffer to accumulate keypresses (like Odoo POS)
+const buffer = ref<string>('')
+const isBufferFresh = ref<boolean>(true)
 
-// Sync buffer if selected item changes
+// Sync when selected item or initial value changes
 watch(
   () => props.value,
   (newVal) => {
-    buffer.value = newVal ? String(newVal) : ''
-  }
+    buffer.value = String(newVal)
+    isBufferFresh.value = true
+  },
+  { immediate: true }
 )
 
-function setMode(newMode: 'qty' | 'discount' | 'price') {
-  mode.value = newMode
-  buffer.value = '' // Clear buffer on mode switch, Odoo style
-  emit('change-mode', newMode)
-}
+const numpadKeys = [
+  '1', '2', '3',
+  '4', '5', '6',
+  '7', '8', '9',
+  '+/-', '0', '.'
+]
 
-function handleInput(key: string) {
+function handleKeyPress(key: string) {
+  // If starting a new key entry session, reset buffer
+  if (isBufferFresh.value && key !== 'DEL') {
+    buffer.value = ''
+    isBufferFresh.value = false
+  }
+
   if (key === 'DEL') {
-    // Backspace action
     buffer.value = buffer.value.slice(0, -1)
+  } else if (key === '.') {
+    if (!buffer.value.includes('.')) {
+      // Odoo logic: starting with '.' turns into '0.'
+      buffer.value = buffer.value ? buffer.value + '.' : '0.'
+    }
   } else if (key === '+/-') {
-    // Toggle negative/positive
     if (buffer.value.startsWith('-')) {
       buffer.value = buffer.value.slice(1)
-    } else if (buffer.value !== '') {
+    } else if (buffer.value && buffer.value !== '0') {
       buffer.value = '-' + buffer.value
     }
-  } else if (key === '.') {
-    // Prevent multiple decimals
-    if (!buffer.value.includes('.')) {
-      buffer.value = buffer.value === '' ? '0.' : buffer.value + '.'
-    }
   } else {
-    // Append digit
+    // Digit keypress
     if (buffer.value === '0') {
       buffer.value = key
     } else {
@@ -58,63 +65,70 @@ function handleInput(key: string) {
     }
   }
 
-  // Parse string buffer to numeric value for cart update
-  let parsed = parseFloat(buffer.value)
+  commitUpdate()
+}
 
-  // Standardize empty string or single decimal point to 0 for calculation
-  if (isNaN(parsed) || buffer.value === '' || buffer.value === '.') {
-    parsed = 0
+function commitUpdate() {
+  // If buffer ends in '.' or is empty, wait for next keypress before updating store
+  if (!buffer.value || buffer.value.endsWith('.')) return
+
+  const parsed = parseFloat(buffer.value)
+  if (!isNaN(parsed) && parsed > 0) {
+    emit('update:value', parsed)
   }
+}
 
-  // Emit update live without closing or clearing
-  emit('update:value', parsed)
+function handleBackspace() {
+  handleKeyPress('DEL')
 }
 </script>
 
 <template>
-  <div class="w-full bg-gray-100 dark:bg-gray-800 p-2 rounded-xl">
-    <!-- Action Modes (Qty / % / Price) -->
-    <div class="grid grid-cols-4 gap-1 mb-1">
-      <button 
-        @click="setMode('qty')"
-        class="h-12 font-bold rounded-lg border text-sm transition-colors"
-        :class="mode === 'qty' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
-      >
-        Qty
-      </button>
-      <button 
-        @click="setMode('discount')"
-        class="h-12 font-bold rounded-lg border text-sm transition-colors"
-        :class="mode === 'discount' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
-      >
-        %
-      </button>
-      <button 
-        @click="setMode('price')"
-        class="h-12 font-bold rounded-lg border text-sm transition-colors"
-        :class="mode === 'price' ? 'bg-teal-600 text-white border-teal-600' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600'"
-      >
-        Price
-      </button>
-      <button 
-        @click="handleInput('DEL')"
-        class="h-12 flex items-center justify-center bg-red-400 text-white rounded-lg border border-red-400 active:bg-red-500"
-      >
-        <Delete :size="20" />
-      </button>
+  <div class="bg-gray-100 dark:bg-gray-800 p-2 rounded-xl select-none">
+    <!-- Active Buffer Display Header -->
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-2 mb-2 text-right">
+      <span class="text-xs text-gray-400 block uppercase font-semibold">{{ label || 'Quantity' }}</span>
+      <span class="text-2xl font-bold text-gray-900 dark:text-gray-100 font-mono">
+        {{ buffer || '0' }}
+      </span>
     </div>
 
-    <!-- Keypad Matrix -->
-    <div class="grid grid-cols-3 gap-1">
-      <button
-        v-for="btn in ['1','2','3','4','5','6','7','8','9','+/-','0','.']"
-        :key="btn"
-        @click="handleInput(btn)"
-        class="h-12 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 font-bold rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 active:bg-gray-200 text-lg flex items-center justify-center"
-        :class="{ 'bg-amber-100 dark:bg-amber-900/40': btn === '+/-', 'bg-orange-100 dark:bg-orange-900/40': btn === '.' }"
-      >
-        {{ btn }}
-      </button>
+    <!-- Keypad Grid -->
+    <div class="grid grid-cols-4 gap-1.5">
+      <!-- 1-9, 0, +/-, . Buttons -->
+      <div class="col-span-3 grid grid-cols-3 gap-1.5">
+        <button
+          v-for="k in numpadKeys"
+          :key="k"
+          @click="handleKeyPress(k)"
+          class="h-12 rounded-lg font-bold text-lg transition-all active:scale-95 flex items-center justify-center border"
+          :class="
+            k === '+/-'
+              ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800'
+              : k === '.'
+                ? 'bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200 border-orange-200 dark:border-orange-800'
+                : 'bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 border-gray-200 dark:border-gray-700 hover:bg-gray-50'
+          "
+        >
+          {{ k }}
+        </button>
+      </div>
+
+      <!-- Action Column (Backspace / Mode Control) -->
+      <div class="flex flex-col gap-1.5">
+        <button
+          @click="handleBackspace"
+          aria-label="Backspace"
+          class="h-12 bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300 border border-red-200 dark:border-red-800 rounded-lg flex items-center justify-center active:scale-95 transition-all"
+        >
+          <Delete :size="20" />
+        </button>
+        <button
+          class="flex-1 bg-teal-500 text-white font-bold text-sm rounded-lg flex items-center justify-center border border-teal-600 shadow-sm"
+        >
+          Qty
+        </button>
+      </div>
     </div>
   </div>
 </template>
