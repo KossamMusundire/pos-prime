@@ -146,7 +146,13 @@ function onKeyboardInputChange() {
 }
 
 function closeKeyboardInput() {
-  const rawStr = keyboardInput.value.replace(',', '.')
+  let rawStr = keyboardInput.value.replace(',', '.').trim()
+  
+  // Automatically prepend '0' if user starts with a dot (e.g., ".1111" -> "0.1111")
+  if (rawStr.startsWith('.')) {
+    rawStr = '0' + rawStr
+  }
+
   const val = parseFloat(rawStr)
 
   if (cartStore.selectedItemIndex === null) {
@@ -154,14 +160,13 @@ function closeKeyboardInput() {
     return
   }
 
-  // If the user cleared the input completely or entered invalid number,
-  // do NOT close the drawer or clear cart item — simply restore the text box!
-  if (isNaN(val) || val <= 0 || rawStr.trim() === '') {
-    syncKeyboardInput()
+  // If user submits an unfinished or invalid value like "" or "0."
+  if (isNaN(val) || val <= 0 || rawStr.endsWith('.')) {
+    syncKeyboardInput() // Reset to valid store value without closing
     return
   }
 
-  // Update store only on valid submission
+  // Valid decimal submission!
   onNumPadUpdate(val)
   showNumPad.value = false
 }
