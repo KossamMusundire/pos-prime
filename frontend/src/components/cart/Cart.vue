@@ -140,26 +140,27 @@ function syncKeyboardInput() {
 // Keyboard input for non-touch desktops
 const keyboardInput = ref('')
 
+// ONLY track local typing string — DO NOT update store on every keystroke
 function onKeyboardInputChange() {
-  const rawStr = keyboardInput.value.replace(',', '.')
-  
-  // Prevent reactivity from closing panel when input is incomplete (e.g. "0", "0.", "")
-  if (
-    rawStr === '' ||
-    rawStr === '0' ||
-    rawStr.endsWith('.') ||
-    isNaN(parseFloat(rawStr))
-  ) {
-    return
-  }
-
-  const val = parseFloat(rawStr)
-  onNumPadUpdate(val)
+  // Just let them type freely without touching the store yet
 }
 
+	
 function closeKeyboardInput() {
   const rawStr = keyboardInput.value.replace(',', '.')
-  const val = parseFloat(rawStr) || 0
+  const val = parseFloat(rawStr) 
+
+	if(cartStore.selectedItemIndex ===null)
+	{
+		showNumPad.value = false
+		return
+	}
+	// If they cleared it completely or typed an invalid value, default to 1 or current qty instead of deleting
+  if (isNaN(val) || val <= 0) {
+    syncKeyboardInput() // Reset input box back to the item's current valid qty
+    showNumPad.value = false
+    return
+  }
   
   onNumPadUpdate(val)
   showNumPad.value = false
@@ -334,6 +335,7 @@ const emit = defineEmits<{
             :placeholder="numPadMode === 'qty' ? (weightInputMode === 'g' ? 'e.g. 654' : 'e.g. 0.654') : '0'"
             @input="onKeyboardInputChange"
             @focus="selectAllInput"
+			@blur="closeKeyboardInput"    
             @keydown.enter.prevent="closeKeyboardInput"
             class="flex-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 text-sm font-semibold text-right focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
             autofocus
